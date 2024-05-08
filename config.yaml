@@ -174,7 +174,7 @@ sensor:
     platform: adc
     pin: GPIO17
     name: "pH sensor voltage"
-    update_interval: 1s
+    update_interval: 5min
     state_class: "measurement"
     accuracy_decimals: 0
     unit_of_measurement: "mV"
