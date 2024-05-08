@@ -1,0 +1,268 @@
+esphome:
+  name: plantinator
+
+esp8266:
+  board: nodemcuv2
+  restore_from_flash: true
+
+preferences:
+  flash_write_interval: 1min
+
+logger:
+  level: INFO
+  esp8266_store_log_strings_in_flash: false
+
+wifi:
+  ssid: !secret ssid
+  password: !secret password
+  power_save_mode: NONE
+  ap:
+    ssid: "Plantinator"
+
+api:
+
+ota:
+
+web_server:
+  port: 80
+  version: 1
+
+number:
+  - platform: template
+    name: "Calibration: LOW (pH)"
+    id: ph_calibration_low_ph
+    min_value: 0
+    max_value: 10
+    step: 0.1
+    unit_of_measurement: "pH"
+    mode: box
+    device_class: ph
+    optimistic: true
+    restore_value: true
+
+  - platform: template
+    name: "Calibration: LOW (mV)"
+    id: ph_calibration_low_mv
+    min_value: 0
+    max_value: 5000
+    step: 1
+    unit_of_measurement: "mV"
+    mode: box
+    device_class: voltage
+    optimistic: true
+    restore_value: true
+
+  - platform: template
+    name: "Calibration: MID (pH)"
+    min_value: 0
+    max_value: 10
+    step: 0.1
+    id: ph_calibration_mid_ph
+    unit_of_measurement: "pH"
+    mode: box
+    device_class: ph
+    optimistic: true
+    restore_value: true
+
+  - platform: template
+    name: "Calibration: MID (mV)"
+    min_value: 0
+    max_value: 5000
+    step: 1
+    id: ph_calibration_mid_mv
+    unit_of_measurement: "mV"
+    mode: box
+    device_class: voltage
+    optimistic: true
+    restore_value: true
+
+  - platform: template
+    name: "Calibration: HIGH (pH)"
+    min_value: 0
+    max_value: 10
+    step: 0.1
+    id: ph_calibration_high_ph
+    unit_of_measurement: "pH"
+    mode: box
+    device_class: ph
+    optimistic: true
+    restore_value: true
+
+  - platform: template
+    name: "Calibration: HIGH (mV)"
+    min_value: 0
+    max_value: 5000
+    step: 1
+    id: ph_calibration_high_mv
+    unit_of_measurement: "mV"
+    mode: box
+    device_class: voltage
+    optimistic: true
+    restore_value: true
+
+  - platform: template
+    name: "Pump speed"
+    min_value: 0.0
+    max_value: 100.0
+    step: 1.0
+    id: pump_speed
+    unit_of_measurement: "%"
+    mode: slider
+    optimistic: true
+    restore_value: true
+    on_value:
+      lambda: |-
+        id(pump).set_level(x);
+
+  - platform: template
+    name: "Pump off time"
+    min_value: 0
+    max_value: 86400
+    step: 1
+    id: pump_off_time
+    unit_of_measurement: "s"
+    mode: box
+    optimistic: true
+    restore_value: true
+
+  - platform: template
+    name: "Pump on time"
+    min_value: 0
+    max_value: 86400
+    step: 1
+    id: pump_on_time
+    unit_of_measurement: "s"
+    mode: box
+    optimistic: true
+    restore_value: true
+
+  - platform: template
+    name: "Pump spinup time"
+    min_value: 0
+    max_value: 100000000
+    step: 1
+    id: pump_spinup_time
+    unit_of_measurement: "ms"
+    mode: box
+    optimistic: true
+    restore_value: true
+
+switch:
+  - id: "status"
+    platform: gpio
+    pin:
+      number: GPIO2
+      inverted: true
+    name: "Status LED"
+
+output:
+  - platform: esp8266_pwm
+    id: "pump"
+    pin: GPIO16
+    frequency: 1000 Hz
+    min_power: 0.0
+    max_power: 1.0
+    zero_means_zero: true
+
+
+sensor:
+  - platform: uptime
+    name: Uptime Sensor
+    id: uptime_sensor
+
+  - id: ph_sensor_voltage
+    platform: adc
+    pin: GPIO17
+    name: "pH sensor voltage"
+    update_interval: 1s
+    state_class: "measurement"
+    accuracy_decimals: 0
+    unit_of_measurement: "mV"
+    filters:
+      - multiply: 1000
+    on_value:
+      then:
+        component.update: ph_sensor_ph
+
+  - platform: template
+    id: ph_sensor_ph
+    name: "pH"
+    update_interval: never
+    lambda: |-
+      float millivolts = id(ph_sensor_voltage).state;
+      
+      /* This only happens if we're out of bounds */
+      if(millivolts > id(ph_calibration_low_mv).state ){
+        return NAN; //Too acidic for our calibration
+      }
+      if(millivolts < id(ph_calibration_high_mv).state ){
+        return NAN; //Too basic for our calibration
+      }
+      
+      /* Acidic side */
+      // This is just linear interpolation between two points.
+      if(millivolts > id(ph_calibration_mid_mv).state ){
+        float fraction = (millivolts - id(ph_calibration_low_mv).state) / ( id(ph_calibration_mid_mv).state - id(ph_calibration_low_mv).state);
+        return esphome::lerp(fraction, id(ph_calibration_low_ph).state, id(ph_calibration_mid_ph).state);
+      }
+      
+      /* Basic side */
+      // This is just linear interpolation between two points.
+      if(millivolts <= id(ph_calibration_mid_mv).state ){
+        float fraction = (millivolts - id(ph_calibration_mid_mv).state) / ( id(ph_calibration_high_mv).state - id(ph_calibration_mid_mv).state);
+        return esphome::lerp(fraction, id(ph_calibration_mid_ph).state, id(ph_calibration_high_ph).state);
+      }
+      
+      // Typically unreachable if your buffer solutions have a wide range.
+      return NAN;
+
+interval:
+  - interval: 1ms
+    then:
+      - lambda: |-
+          static int current_mode = 0;
+          static int last_mode_switch = 0;
+          int now = millis();
+          
+          switch(current_mode){
+            case 0: {
+                  // We're not watering right now.
+                  int seconds_passed = (now - last_mode_switch) / 1000;
+                  if(seconds_passed >= id(pump_off_time).state){
+                    if(id(pump_spinup_time).state > 0){
+                      id(pump).set_level(1.0);
+                      current_mode = 1;
+                    }else{
+                      id(pump).set_level(id(pump_speed).state / 100.0);
+                      current_mode = 2;
+                    }
+                    last_mode_switch = now;
+                  }
+              }
+              break;
+            case 1: {
+                  // We're spinning up the pump
+                  int milliseconds_passed = now - last_mode_switch;
+                  if(milliseconds_passed >= id(pump_spinup_time).state){
+                    id(pump).set_level(id(pump_speed).state / 100.0);
+                    last_mode_switch = now;
+                    current_mode = 2;
+                  }
+              }
+              break;
+            case 2: {
+                  // We are watering right now.
+                  int seconds_passed = (now - last_mode_switch) / 1000;
+                  if(seconds_passed >= id(pump_on_time).state){
+                    id(pump).turn_off();
+                    last_mode_switch = now;
+                    current_mode = 0;
+                  }
+              }
+              break;
+            default:
+              //Restore from unknown state
+              last_mode_switch = 0;
+              current_mode = 0;
+              break;
+          }

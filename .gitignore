@@ -1,0 +1,5 @@
+/target
+secrets.yaml
+/.esphome/
+/esphome/
+/esphome-docs/
