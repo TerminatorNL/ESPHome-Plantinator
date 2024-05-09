@@ -239,7 +239,9 @@ sensor:
     update_interval: never
     accuracy_decimals: 1
     state_class: "measurement"
+    device_class: "ph"
     unit_of_measurement: "pH"
+    icon: "mdi:ph"
     lambda: |-
       float millivolts = id(ph_sensor_voltage).state;
       
