@@ -29,7 +29,20 @@ web_server:
 
 number:
   - platform: template
+    name: "pH sample interval"
+    icon: "mdi:clipboard-text-clock-outline"
+    id: ph_sample_interval
+    min_value: 0.1
+    max_value: 86400
+    step: 0.1
+    unit_of_measurement: "s"
+    mode: box
+    optimistic: true
+    restore_value: true
+
+  - platform: template
     name: "Calibration: LOW (pH)"
+    icon: "mdi:pan-down"
     id: ph_calibration_low_ph
     min_value: 0
     max_value: 10
@@ -42,6 +55,7 @@ number:
 
   - platform: template
     name: "Calibration: LOW (mV)"
+    icon: "mdi:menu-up"
     id: ph_calibration_low_mv
     min_value: 0
     max_value: 5000
@@ -54,6 +68,7 @@ number:
 
   - platform: template
     name: "Calibration: MID (pH)"
+    icon: "mdi:circle-small"
     min_value: 0
     max_value: 10
     step: 0.1
@@ -66,6 +81,7 @@ number:
 
   - platform: template
     name: "Calibration: MID (mV)"
+    icon: "mdi:square-small"
     min_value: 0
     max_value: 5000
     step: 1
@@ -78,6 +94,7 @@ number:
 
   - platform: template
     name: "Calibration: HIGH (pH)"
+    icon: "mdi:pan-up"
     min_value: 0
     max_value: 10
     step: 0.1
@@ -90,6 +107,7 @@ number:
 
   - platform: template
     name: "Calibration: HIGH (mV)"
+    icon: "mdi:menu-up"
     min_value: 0
     max_value: 5000
     step: 1
@@ -102,6 +120,7 @@ number:
 
   - platform: template
     name: "Pump speed"
+    icon: "mdi:pump"
     min_value: 0.0
     max_value: 100.0
     step: 1.0
@@ -115,7 +134,20 @@ number:
         id(pump).set_level(x);
 
   - platform: template
+    name: "Pump spinup time"
+    icon: "mdi:pump"
+    min_value: 0
+    max_value: 100000000
+    step: 1
+    id: pump_spinup_time
+    unit_of_measurement: "ms"
+    mode: box
+    optimistic: true
+    restore_value: true
+
+  - platform: template
     name: "Pump off time"
+    icon: "mdi:water-pump-off"
     min_value: 0
     max_value: 86400
     step: 1
@@ -127,22 +159,12 @@ number:
 
   - platform: template
     name: "Pump on time"
+    icon: "mdi:water-pump"
     min_value: 0
     max_value: 86400
     step: 1
     id: pump_on_time
     unit_of_measurement: "s"
-    mode: box
-    optimistic: true
-    restore_value: true
-
-  - platform: template
-    name: "Pump spinup time"
-    min_value: 0
-    max_value: 100000000
-    step: 1
-    id: pump_spinup_time
-    unit_of_measurement: "ms"
     mode: box
     optimistic: true
     restore_value: true
@@ -154,6 +176,22 @@ switch:
       number: GPIO2
       inverted: true
     name: "Status LED"
+    icon: "mdi:led-off"
+
+  - id: simultaneous_pump_and_ph_measure
+    platform: template
+    name: "Measure pH while pumping"
+    icon: "mdi:clipboard-text-clock-outline"
+    lambda: |-
+      return id(global_allow_ph_measurement_during_pump);
+    turn_on_action:
+      - globals.set:
+          id: global_allow_ph_measurement_during_pump
+          value: 'true'
+    turn_off_action:
+      - globals.set:
+          id: global_allow_ph_measurement_during_pump
+          value: 'false'
 
 output:
   - platform: esp8266_pwm
@@ -174,12 +212,23 @@ sensor:
     platform: adc
     pin: GPIO17
     name: "pH sensor voltage"
-    update_interval: 5min
+    update_interval: never
     state_class: "measurement"
     accuracy_decimals: 0
     unit_of_measurement: "mV"
     filters:
+      - lambda: |-
+          if(id(global_allow_ph_measurement_during_pump)){
+            return x;
+          }else{
+            return id(global_current_mode) == 0 ? x : NAN;
+          }
+      - filter_out: nan
       - multiply: 1000
+      - median:
+          window_size: 20
+          send_every: 10
+          send_first_at: 10
     on_value:
       then:
         component.update: ph_sensor_ph
@@ -188,6 +237,9 @@ sensor:
     id: ph_sensor_ph
     name: "pH"
     update_interval: never
+    accuracy_decimals: 1
+    state_class: "measurement"
+    unit_of_measurement: "pH"
     lambda: |-
       float millivolts = id(ph_sensor_voltage).state;
       
@@ -216,14 +268,64 @@ sensor:
       // Typically unreachable if your buffer solutions have a wide range.
       return NAN;
 
+globals:
+  - id: global_current_mode
+    type: int
+    restore_value: no
+    initial_value: '0'
+  - id: global_last_mode_switch
+    type: int
+    restore_value: no
+    initial_value: '0'
+  - id: global_allow_ph_measurement_during_pump
+    type: bool
+    restore_value: yes
+    initial_value: 'false'
+
+button:
+  - platform: template
+    name: "Toggle pump"
+    icon: "mdi:water-pump"
+    on_press:
+      - lambda: |-
+          switch(id(global_current_mode)){
+            case 0:
+              id(global_last_mode_switch) = millis() - (id(pump_off_time).state * 1000);
+              break;
+            case 1:
+              id(global_last_mode_switch) = millis() - id(pump_spinup_time).state;
+              break;
+            case 2:
+              id(global_last_mode_switch) = millis() - (id(pump_on_time).state * 1000);
+              break;
+            default:
+              break;
+          }
+
+  - platform: template
+    name: "Measure pH now"
+    icon: "mdi:ph"
+    on_press:
+      - lambda: |-
+          for (int i = 0; i < 20; i++) {
+            id(ph_sensor_voltage).update();
+          }
+
 interval:
   - interval: 1ms
     then:
       - lambda: |-
-          static int current_mode = 0;
-          static int last_mode_switch = 0;
+          int current_mode = id(global_current_mode);
+          int last_mode_switch = id(global_last_mode_switch);
           int now = millis();
-          
+
+          static int last_ph_sample = 0;
+          // We divide by 100 and not 1000 because we have a median filter that consumes 10 samples to present one.
+          if((now - last_ph_sample) / 100 > id(ph_sample_interval).state){
+            id(ph_sensor_voltage).update();
+            last_ph_sample = now;
+          }
+
           switch(current_mode){
             case 0: {
                   // We're not watering right now.
@@ -266,3 +368,6 @@ interval:
               current_mode = 0;
               break;
           }
+
+          id(global_current_mode) = current_mode;
+          id(global_last_mode_switch) = last_mode_switch;
