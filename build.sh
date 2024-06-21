@@ -1,4 +1,4 @@
 #!/bin/bash
 
-source ./esphome/venv/bin/activate
+source ./venv/bin/activate
 esphome config config.yaml
